@@ -1,0 +1,248 @@
+From a6a6d8b9d9f4c00112233445566778899abcde01 Mon Sep 17 00:00:00 2001
+From: Your Name <you@example.com>
+Date: Tue, 26 Aug 2025 12:34:00 +0000
+Subject: [PATCH 1/2] feat(nanbox): NaN-boxed TValue minimal core (PC/Android little-endian, IEEE-754)
+
+- Make TValue 8 bytes via NaN-boxing (sign=1 qNaN tag space).
+- Preserve Lua 5.1 public macro semantics by macro overrides.
+- No .c changes except luaO_nilobject_ (next patch).
+- Assumes little-endian + IEEE-754 double; disallow -ffast-math.
+
+--- a/src/lobject.h
++++ b/src/lobject.h
+@@ -8,6 +8,9 @@
+-#ifndef lobject_h
+-#define lobject_h
++#ifndef lobject_h
++#define lobject_h
++
++/* NaN-boxing minimal core additions */
++#include <stdint.h>   /* uint64_t, uintptr_t */
++#include <string.h>   /* memcpy */
+@@ -56,7 +59,7 @@ typedef union {
+   int b;
+ } Value;
+-
+-#define TValuefields    Value value; int tt
++/* NaN-boxed: shrink TValue to a single 64-bit word */
++#define TValuefields    uint64_t nb
+@@
+ typedef struct lua_TValue {
+   TValuefields;
+ } TValue;
+@@
+ typedef union Udata {
+   struct {
+     CommonHeader;
+@@
+ } Udata;
++
++/* --------------------------------------------------------------- */
++/*
++** NaN-boxing overrides
++**
++** Layout (little-endian):
++**   [63] sign = 1
++**   [62:52] exponent = 0x7FF
++**   [51] qNaN indicator = 1 (kept set)
++**   [50:48] TAG (3 bits)
++**   [47:0]  payload (48-bit)
++**
++** Numbers (+/-inf and +qNaN with sign=0) are treated as numbers.
++** Only NaNs with sign=1 & qNaN are our boxed non-number values.
++*/
++#ifndef LUA_NANBOX
++#define LUA_NANBOX 1
++#endif
++
++#if LUA_NANBOX
++
++/* ---- Tag encoding (3 bits) ---- */
++#define NB_TAG_NIL        0x1u
++#define NB_TAG_BOOLEAN    0x2u  /* payload 0/1 */
++#define NB_TAG_LIGHTUD    0x3u  /* payload = void* */
++#define NB_TAG_GCOBJ      0x4u  /* payload = GCObject* (string/table/function/userdata/thread/proto/upval) */
++#define NB_TAG_DEADKEY    0x5u  /* internal tombstone */
++/* 0x0, 0x6, 0x7 reserved */
++
++/* ---- Top mask and shifts ---- */
++#define NB_TOP_MASK       0xFFF8000000000000ULL  /* sign=1, exp=0x7FF, qNaN bit=1 */
++#define NB_TAG_SHIFT      48
++#define NB_TAG_MASK       (0x7ULL << NB_TAG_SHIFT)
++#define NB_PAYLOAD_MASK   0x0000FFFFFFFFFFFFULL
++
++#define nb_isboxed(u64)   (((u64) & NB_TOP_MASK) == NB_TOP_MASK)
++#define nb_gettag(u64)    (unsigned)(((u64) >> NB_TAG_SHIFT) & 0x7u)
++#define nb_getpayload(u64)        ((uint64_t)((u64) & NB_PAYLOAD_MASK))
++#define nb_makebox(tag, payload)  ( NB_TOP_MASK | ((uint64_t)(tag) << NB_TAG_SHIFT) | ((uint64_t)(payload) & NB_PAYLOAD_MASK) )
++
++/* Canonical +qNaN for number-NaN normalization (sign=0). */
++#define NB_CANON_QNAN     0x7FF8000000000000ULL
++
++/* Helpers: bit-copies between double and u64 without aliasing UB */
++static LUAI_FUNC uint64_t nb_fromnum (lua_Number d) { uint64_t u; memcpy(&u, &d, 8); return u; }
++static LUAI_FUNC lua_Number nb_tonum (uint64_t u)   { lua_Number d; memcpy(&d, &u, 8); return d; }
++static LUAI_FUNC int nb_isnumberbits (uint64_t u) {
++  uint64_t exp = (u >> 52) & 0x7FFULL;
++  if (exp != 0x7FFULL) return 1;                           /* finite */
++  if ((u & 0x000FFFFFFFFFFFFFULL) == 0) return 1;          /* +/-inf */
++  return ((u >> 63) == 0);                                  /* +qNaN -> number */
++}
++
++/* Access GC header.tt for real Lua type */
++typedef struct GCheader {
++  GCObject *next; lu_byte tt; lu_byte marked;
++} GCheader;
++#define nb_gcheader(o)    (&(((GCObject*)(o))->gch))
++
++/* ---------------- type tests ---------------- */
++#undef ttype
++#define ttype(o)  \
++  ( nb_isnumberbits(((const TValue*)(o))->nb) ? LUA_TNUMBER : \
++    ( nb_isboxed(((const TValue*)(o))->nb) ? \
++      ( (nb_gettag(((const TValue*)(o))->nb) == NB_TAG_NIL)     ? LUA_TNIL : \
++        (nb_gettag(((const TValue*)(o))->nb) == NB_TAG_BOOLEAN) ? LUA_TBOOLEAN : \
++        (nb_gettag(((const TValue*)(o))->nb) == NB_TAG_LIGHTUD) ? LUA_TLIGHTUSERDATA : \
++        (nb_gettag(((const TValue*)(o))->nb) == NB_TAG_DEADKEY) ? LUA_TDEADKEY : \
++        (int)(nb_gcheader((GCObject*)(uintptr_t)nb_getpayload(((const TValue*)(o))->nb))->tt) ) \
++      ) : LUA_TNUMBER ) )
++
++#undef ttisnumber
++#define ttisnumber(o)     (ttype(o) == LUA_TNUMBER)
++#undef ttisnil
++#define ttisnil(o)        (ttype(o) == LUA_TNIL)
++#undef ttisboolean
++#define ttisboolean(o)    (ttype(o) == LUA_TBOOLEAN)
++#undef ttislightuserdata
++#define ttislightuserdata(o) (ttype(o) == LUA_TLIGHTUSERDATA)
++#undef ttisstring
++#define ttisstring(o)     (ttype(o) == LUA_TSTRING)
++#undef ttistable
++#define ttistable(o)      (ttype(o) == LUA_TTABLE)
++#undef ttisfunction
++#define ttisfunction(o)   (ttype(o) == LUA_TFUNCTION)
++#undef ttisuserdata
++#define ttisuserdata(o)   (ttype(o) == LUA_TUSERDATA)
++#undef ttisthread
++#define ttisthread(o)     (ttype(o) == LUA_TTHREAD)
++#undef ttisdeadkey
++#ifndef LUA_TDEADKEY
++#define LUA_TDEADKEY      0x0F  /* original Lua 5.1 defines this internally */
++#endif
++#define ttisdeadkey(o)    (ttype(o) == LUA_TDEADKEY)
++
++/* collectable iff it is a GC object (string/table/function/userdata/thread/proto/upval) */
++#undef iscollectable
++#define iscollectable(o)  (ttype(o) >= LUA_TSTRING && ttype(o) != LUA_TDEADKEY)
++
++/* ---------------- getters ---------------- */
++#undef nvalue
++#define nvalue(o)         (nb_tonum(((const TValue*)(o))->nb))
++#undef gcvalue
++#define gcvalue(o)        (cast(GCObject *, (uintptr_t)nb_getpayload(((const TValue*)(o))->nb)))
++#undef pvalue
++#define pvalue(o)         (cast(void *, (uintptr_t)nb_getpayload(((const TValue*)(o))->nb)))
++/* typed getters */
++#undef rawtsvalue
++#define rawtsvalue(o)     (cast(TString *, gcvalue(o)))
++#undef tsvalue
++#define tsvalue(o)        (&rawtsvalue(o)->tsv)
++#undef svalue
++#define svalue(o)         getstr(rawtsvalue(o))
++#undef rawuvalue
++#define rawuvalue(o)      (cast(Udata *, gcvalue(o)))
++#undef uvalue
++#define uvalue(o)         (&rawuvalue(o)->uv)
++#undef clvalue
++#define clvalue(o)        (cast(Closure *, gcvalue(o)))
++#undef hvalue
++#define hvalue(o)         (cast(Table *, gcvalue(o)))
++#undef bvalue
++#define bvalue(o)         ((int)(nb_getpayload(((const TValue*)(o))->nb) & 1u))
++#undef thvalue
++#define thvalue(o)        (cast(lua_State *, gcvalue(o)))
++#undef l_isfalse
++#define l_isfalse(o)      (ttisnil(o) || (ttisboolean(o) && bvalue(o)==0))
++
++/* ---------------- debug helpers ---------------- */
++#undef checkconsistency
++#define checkconsistency(obj) \
++  lua_assert(!iscollectable(obj) || (ttype(obj) == nb_gcheader(gcvalue(obj))->tt))
++#undef checkliveness
++#define checkliveness(g,obj) \
++  lua_assert(!iscollectable(obj) || \
++    ((ttype(obj) == nb_gcheader(gcvalue(obj))->tt) && !isdead(g, gcvalue(obj))))
++
++/* ---------------- setters ---------------- */
++/* normalize NaN to +qNaN, so +NaN remains a number (sign=0) */
++static LUAI_FUNC void setnvalue_impl (TValue *o, lua_Number d) {
++#ifdef luai_numisnan
++  if (luai_numisnan(d)) { o->nb = NB_CANON_QNAN; return; }
++#else
++  { lua_Number z = d; if (z != z) { o->nb = NB_CANON_QNAN; return; } }
++#endif
++  o->nb = nb_fromnum(d);
++}
++#undef setnvalue
++#define setnvalue(obj,x)      setnvalue_impl((obj),(x))
++#undef setnilvalue
++#define setnilvalue(obj)      ((obj)->nb = nb_makebox(NB_TAG_NIL, 0))
++#undef setbvalue
++#define setbvalue(obj,x)      ((obj)->nb = nb_makebox(NB_TAG_BOOLEAN, ((x)?1:0)))
++#undef setpvalue
++#define setpvalue(obj,x)      ((obj)->nb = nb_makebox(NB_TAG_LIGHTUD, cast(uintptr_t,(x))))
++#undef setsvalue
++#define setsvalue(L,obj,x)    ((obj)->nb = nb_makebox(NB_TAG_GCOBJ, cast(uintptr_t, cast(GCObject*, (x)))))
++#undef setuvalue
++#define setuvalue(L,obj,x)    ((obj)->nb = nb_makebox(NB_TAG_GCOBJ, cast(uintptr_t, cast(GCObject*, (x)))))
++#undef setthvalue
++#define setthvalue(L,obj,x)   ((obj)->nb = nb_makebox(NB_TAG_GCOBJ, cast(uintptr_t, cast(GCObject*, (x)))))
++#undef setclvalue
++#define setclvalue(L,obj,x)   ((obj)->nb = nb_makebox(NB_TAG_GCOBJ, cast(uintptr_t, cast(GCObject*, (x)))))
++#undef sethvalue
++#define sethvalue(L,obj,x)    ((obj)->nb = nb_makebox(NB_TAG_GCOBJ, cast(uintptr_t, cast(GCObject*, (x)))))
++#undef setptvalue
++#define setptvalue(L,obj,x)   ((obj)->nb = nb_makebox(NB_TAG_GCOBJ, cast(uintptr_t, cast(GCObject*, (x)))))
++#undef setlightuserdata
++#define setlightuserdata(obj,x) setpvalue((obj),(x))
++#undef setdeadvalue
++#define setdeadvalue(obj)     ((obj)->nb = nb_makebox(NB_TAG_DEADKEY, 0))
++
++/* copy/move */
++#undef setobj
++#define setobj(L,obj1,obj2)   ((obj1)->nb = (obj2)->nb)
++#undef setobjs2s
++#define setobjs2s             setobj
++#undef setobj2s
++#define setobj2s              setobj
++#undef setsvalue2s
++#define setsvalue2s           setsvalue
++#undef sethvalue2s
++#define sethvalue2s           sethvalue
++#undef setptvalue2s
++#define setptvalue2s          setptvalue
++#undef setobjt2t
++#define setobjt2t             setobj
++#undef setobj2t
++#define setobj2t              setobj
++#undef setobj2n
++#define setobj2n              setobj
++#undef setsvalue2n
++#define setsvalue2n           setsvalue
++
++/* Some code calls setttype to mark dead keys or adjust TKey. */
++#undef setttype
++#define setttype(obj, tt_)  do { \
++  TValue* _o = (obj); int _tt = (tt_); \
++  if (_tt == LUA_TDEADKEY) { setdeadvalue(_o); } \
++  else if (_tt == LUA_TNIL) { setnilvalue(_o); } \
++  else { (void)0; } \
++} while(0)
++
++/* Sanity on 64-bit: sizeof(TValue) must be 8 now */
++#if defined(LUA_DEBUG)
++typedef char lua_static_assert_tvalue_is_8[(sizeof(TValue) == 8) ? 1 : -1];
++#endif
++
++#endif /* LUA_NANBOX */
++/* --------------------------------------------------------------- */
