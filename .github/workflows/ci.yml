@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        layout: ["", "1"]
+        strict: ["", "1"]
+        compiler: ["gcc", "clang"]
+        sanitizer: ["", "asan-ubsan"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+      - name: Build and run tests
+        env:
+          LUA_NANBOX_LAYOUT: ${{ matrix.layout }}
+          LUA_NANBOX_STRICT: ${{ matrix.strict }}
+          CC: ${{ matrix.compiler }}
+          SAN_FLAGS: ${{ matrix.sanitizer == 'asan-ubsan' && '-fsanitize=address,undefined -fno-omit-frame-pointer' || '' }}
+        run: |
+          bash build.sh
+      - name: Make test (gcc path)
+        run: make test
+
+  linux-official-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        layout: ["", "1"]
+        strict: ["", "1"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+      - name: Run build + official tests
+        env:
+          OFFICIAL_TESTS: "1"
+          LUA_NANBOX_LAYOUT: ${{ matrix.layout }}
+          LUA_NANBOX_STRICT: ${{ matrix.strict }}
+        run: |
+          bash build.sh
+
+  windows-msys-official-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            mingw-w64-x86_64-gcc
+            make
+      - name: Build + tests (repo)
+        shell: msys2 {0}
+        run: |
+          bash build.sh
+      - name: Official tests (subset)
+        shell: msys2 {0}
+        env:
+          OFFICIAL_TESTS: "1"
+        run: |
+          bash build.sh
