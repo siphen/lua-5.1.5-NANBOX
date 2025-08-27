@@ -1,3 +1,35 @@
+Modifications in this fork (NaNbox Extension)
+---------------------------------------------
+This fork of Lua 5.1 adds NaNboxing support and a complete test/benchmark setup.
+
+- Switches & Layout
+  - `LUA_NANBOX` (default ON): enables centralized accessors and the compatibility path.
+  - `LUA_NANBOX_LAYOUT=1`: enables the true 8‑byte NaNboxed TValue layout.
+  - `LUA_NANBOX_STRICT=1`: extra runtime checks (pointer canonicality, assumptions).
+  - Little‑endian + IEEE‑754 required. Arithmetic NaNs are treated as numbers; only tagged NaNs are considered boxed values.
+
+- Key Changes (src/)
+  - `lnanbox.h`: bit layout, tagged NaN helpers, fast number check (`tv_isnumber_fast`), direct number read in layout mode.
+  - `lobject.h/c`: route `ttis*`/`nvalue`/`gcvalue`/`set*` through accessors; in layout mode, `ttisnumber` fast path and `nvalue` direct access.
+  - `ltable.c`: use `setobj(L, key2tval(mp), key)` for keys; runtime init of `dummynode` under layout mode.
+  - `lvm.c`: arithmetic op fast path remains `ttisnumber + nvalue`, which now benefits from the new fast path.
+
+- Build & Tests
+  - `bash build.sh`: builds (release by default) and runs Lua unit tests plus C API tests.
+  - Real layout: `LUA_NANBOX_LAYOUT=1 LUA_NANBOX_STRICT=1 bash build.sh`.
+  - Official lua-tests (v5-1-3 submodule in `external/lua-tests`): `OFFICIAL_TESTS=1 bash build.sh`.
+    - Windows/MSYS runs a stable subset; Linux/WSL/CI runs the full suite.
+  - Initialize submodule once: `git submodule update --init --recursive`.
+
+- Benchmarks & Report
+  - `bash bench/bench_report.sh`: generates `bench/report.md` and injects it into `docs/NANBOX_REPORT.md`.
+  - Covers table/struct‑heavy and numeric‑heavy scenarios (table_stress, luau:*, luajit:*, shootout:*).
+
+- Notes
+  - NaNbox reduces memory footprint most in data‑structure‑heavy workloads; pure numeric loops may not speed up (branching/bit checks), though the new fast path minimizes overhead.
+  - Dead keys keep payload pointers (only type tag changes), matching upstream behavior for stable iteration.
+  - For stricter validation, set `SAN_FLAGS` (e.g., Linux/Clang: `-fsanitize=address,undefined -fno-omit-frame-pointer`).
+
 README for Lua 5.1
 
 See INSTALL for installation instructions.
