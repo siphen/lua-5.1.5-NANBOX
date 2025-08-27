@@ -18,6 +18,14 @@
 ** ===================================================================
 */
 
+/*
+** Default-on experimental feature toggle for NaN-boxing.
+** This macro is a no-op unless the VM/core is modified to honor it.
+*/
+#ifndef LUA_NANBOX
+#define LUA_NANBOX	1
+#endif
+
 
 /*
 @@ LUA_ANSI controls the use of non-ansi features.
@@ -760,4 +768,3 @@ union luai_Cast { double l_d; long l_l; };
 
 
 #endif
-

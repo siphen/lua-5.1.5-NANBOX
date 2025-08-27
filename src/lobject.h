@@ -68,37 +68,54 @@ typedef union {
 ** Tagged Values
 */
 
+#if defined(LUA_NANBOX_LAYOUT)
+#include <stdint.h>
+typedef union { uint64_t u; lua_Number n; } TValueBox;
+#define TValuefields	TValueBox box
+#else
 #define TValuefields	Value value; int tt
+#endif
 
 typedef struct lua_TValue {
   TValuefields;
 } TValue;
 
+/* Centralized accessors (Stage 1): include NaN-box helper API */
+#include "lnanbox.h"
+
 
 /* Macros to test type */
-#define ttisnil(o)	(ttype(o) == LUA_TNIL)
-#define ttisnumber(o)	(ttype(o) == LUA_TNUMBER)
-#define ttisstring(o)	(ttype(o) == LUA_TSTRING)
-#define ttistable(o)	(ttype(o) == LUA_TTABLE)
-#define ttisfunction(o)	(ttype(o) == LUA_TFUNCTION)
-#define ttisboolean(o)	(ttype(o) == LUA_TBOOLEAN)
-#define ttisuserdata(o)	(ttype(o) == LUA_TUSERDATA)
-#define ttisthread(o)	(ttype(o) == LUA_TTHREAD)
-#define ttislightuserdata(o)	(ttype(o) == LUA_TLIGHTUSERDATA)
+#define ttisnil(o)	(tv_type((const TValue*)(o)) == LUA_TNIL)
+#if defined(LUA_NANBOX_LAYOUT)
+#define ttisnumber(o)	(tv_isnumber_fast((const TValue*)(o)))
+#else
+#define ttisnumber(o)	(tv_type((const TValue*)(o)) == LUA_TNUMBER)
+#endif
+#define ttisstring(o)	(tv_type((const TValue*)(o)) == LUA_TSTRING)
+#define ttistable(o)	(tv_type((const TValue*)(o)) == LUA_TTABLE)
+#define ttisfunction(o)	(tv_type((const TValue*)(o)) == LUA_TFUNCTION)
+#define ttisboolean(o)	(tv_type((const TValue*)(o)) == LUA_TBOOLEAN)
+#define ttisuserdata(o)	(tv_type((const TValue*)(o)) == LUA_TUSERDATA)
+#define ttisthread(o)	(tv_type((const TValue*)(o)) == LUA_TTHREAD)
+#define ttislightuserdata(o)	(tv_type((const TValue*)(o)) == LUA_TLIGHTUSERDATA)
 
 /* Macros to access values */
-#define ttype(o)	((o)->tt)
-#define gcvalue(o)	check_exp(iscollectable(o), (o)->value.gc)
-#define pvalue(o)	check_exp(ttislightuserdata(o), (o)->value.p)
-#define nvalue(o)	check_exp(ttisnumber(o), (o)->value.n)
-#define rawtsvalue(o)	check_exp(ttisstring(o), &(o)->value.gc->ts)
+#define ttype(o)	(tv_type((const TValue*)(o)))
+#define gcvalue(o)	check_exp(iscollectable(o), tv_getgc((const TValue*)(o)))
+#define pvalue(o)	check_exp(ttislightuserdata(o), tv_getp((const TValue*)(o)))
+#if defined(LUA_NANBOX_LAYOUT)
+#define nvalue(o)	check_exp(ttisnumber(o), ((const TValue*)(o))->box.n)
+#else
+#define nvalue(o)	check_exp(ttisnumber(o), tv_getn((const TValue*)(o)))
+#endif
+#define rawtsvalue(o)	check_exp(ttisstring(o), &(tv_getgc((const TValue*)(o))->ts))
 #define tsvalue(o)	(&rawtsvalue(o)->tsv)
-#define rawuvalue(o)	check_exp(ttisuserdata(o), &(o)->value.gc->u)
+#define rawuvalue(o)	check_exp(ttisuserdata(o), &(tv_getgc((const TValue*)(o))->u))
 #define uvalue(o)	(&rawuvalue(o)->uv)
-#define clvalue(o)	check_exp(ttisfunction(o), &(o)->value.gc->cl)
-#define hvalue(o)	check_exp(ttistable(o), &(o)->value.gc->h)
-#define bvalue(o)	check_exp(ttisboolean(o), (o)->value.b)
-#define thvalue(o)	check_exp(ttisthread(o), &(o)->value.gc->th)
+#define clvalue(o)	check_exp(ttisfunction(o), &(tv_getgc((const TValue*)(o))->cl))
+#define hvalue(o)	check_exp(ttistable(o), &(tv_getgc((const TValue*)(o))->h))
+#define bvalue(o)	check_exp(ttisboolean(o), tv_getb((const TValue*)(o)))
+#define thvalue(o)	check_exp(ttisthread(o), &(tv_getgc((const TValue*)(o))->th))
 
 #define l_isfalse(o)	(ttisnil(o) || (ttisboolean(o) && bvalue(o) == 0))
 
@@ -106,53 +123,53 @@ typedef struct lua_TValue {
 ** for internal debug only
 */
 #define checkconsistency(obj) \
-  lua_assert(!iscollectable(obj) || (ttype(obj) == (obj)->value.gc->gch.tt))
+  lua_assert(!iscollectable(obj) || (ttype(obj) == gcvalue(obj)->gch.tt))
 
 #define checkliveness(g,obj) \
   lua_assert(!iscollectable(obj) || \
-  ((ttype(obj) == (obj)->value.gc->gch.tt) && !isdead(g, (obj)->value.gc)))
+  ((ttype(obj) == gcvalue(obj)->gch.tt) && !isdead(g, gcvalue(obj))))
 
 
 /* Macros to set values */
-#define setnilvalue(obj) ((obj)->tt=LUA_TNIL)
+#define setnilvalue(obj) tv_setnil((TValue*)(obj))
 
 #define setnvalue(obj,x) \
-  { TValue *i_o=(obj); i_o->value.n=(x); i_o->tt=LUA_TNUMBER; }
+  { TValue *i_o=(TValue*)(obj); tv_setn(i_o, (x)); }
 
 #define setpvalue(obj,x) \
-  { TValue *i_o=(obj); i_o->value.p=(x); i_o->tt=LUA_TLIGHTUSERDATA; }
+  { TValue *i_o=(TValue*)(obj); tv_setp(i_o, (x)); }
 
 #define setbvalue(obj,x) \
-  { TValue *i_o=(obj); i_o->value.b=(x); i_o->tt=LUA_TBOOLEAN; }
+  { TValue *i_o=(TValue*)(obj); tv_setb(i_o, (x)); }
 
 #define setsvalue(L,obj,x) \
-  { TValue *i_o=(obj); \
-    i_o->value.gc=cast(GCObject *, (x)); i_o->tt=LUA_TSTRING; \
+  { TValue *i_o=(TValue*)(obj); \
+    tv_setgc(i_o, cast(GCObject *, (x)), LUA_TSTRING); \
     checkliveness(G(L),i_o); }
 
 #define setuvalue(L,obj,x) \
-  { TValue *i_o=(obj); \
-    i_o->value.gc=cast(GCObject *, (x)); i_o->tt=LUA_TUSERDATA; \
+  { TValue *i_o=(TValue*)(obj); \
+    tv_setgc(i_o, cast(GCObject *, (x)), LUA_TUSERDATA); \
     checkliveness(G(L),i_o); }
 
 #define setthvalue(L,obj,x) \
-  { TValue *i_o=(obj); \
-    i_o->value.gc=cast(GCObject *, (x)); i_o->tt=LUA_TTHREAD; \
+  { TValue *i_o=(TValue*)(obj); \
+    tv_setgc(i_o, cast(GCObject *, (x)), LUA_TTHREAD); \
     checkliveness(G(L),i_o); }
 
 #define setclvalue(L,obj,x) \
-  { TValue *i_o=(obj); \
-    i_o->value.gc=cast(GCObject *, (x)); i_o->tt=LUA_TFUNCTION; \
+  { TValue *i_o=(TValue*)(obj); \
+    tv_setgc(i_o, cast(GCObject *, (x)), LUA_TFUNCTION); \
     checkliveness(G(L),i_o); }
 
 #define sethvalue(L,obj,x) \
-  { TValue *i_o=(obj); \
-    i_o->value.gc=cast(GCObject *, (x)); i_o->tt=LUA_TTABLE; \
+  { TValue *i_o=(TValue*)(obj); \
+    tv_setgc(i_o, cast(GCObject *, (x)), LUA_TTABLE); \
     checkliveness(G(L),i_o); }
 
 #define setptvalue(L,obj,x) \
-  { TValue *i_o=(obj); \
-    i_o->value.gc=cast(GCObject *, (x)); i_o->tt=LUA_TPROTO; \
+  { TValue *i_o=(TValue*)(obj); \
+    tv_setgc(i_o, cast(GCObject *, (x)), LUA_TPROTO); \
     checkliveness(G(L),i_o); }
 
 
@@ -160,7 +177,7 @@ typedef struct lua_TValue {
 
 #define setobj(L,obj1,obj2) \
   { const TValue *o2=(obj2); TValue *o1=(obj1); \
-    o1->value = o2->value; o1->tt=o2->tt; \
+    tv_copy(o1, o2); \
     checkliveness(G(L),o1); }
 
 
@@ -183,10 +200,10 @@ typedef struct lua_TValue {
 #define setobj2n	setobj
 #define setsvalue2n	setsvalue
 
-#define setttype(obj, tt) (ttype(obj) = (tt))
+#define setttype(obj, tt) tv_settype((TValue*)(obj), (tt))
 
 
-#define iscollectable(o)	(ttype(o) >= LUA_TSTRING)
+#define iscollectable(o)	(tv_iscollectable((const TValue*)(o)))
 
 
 

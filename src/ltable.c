@@ -72,10 +72,23 @@
 
 #define dummynode		(&dummynode_)
 
+#if defined(LUA_NANBOX)
+static Node dummynode_;
+static int dummynode_inited = 0;
+static void ensure_dummynode_init(void) {
+  if (!dummynode_inited) {
+    gnext(&dummynode_) = NULL;
+    setnilvalue(&dummynode_.i_val);
+    setnilvalue(&dummynode_.i_key.tvk);
+    dummynode_inited = 1;
+  }
+}
+#else
 static const Node dummynode_ = {
   {{NULL}, LUA_TNIL},  /* value */
   {{{NULL}, LUA_TNIL, NULL}}  /* key */
 };
+#endif
 
 
 /*
@@ -272,6 +285,9 @@ static void setarrayvector (lua_State *L, Table *t, int size) {
 static void setnodevector (lua_State *L, Table *t, int size) {
   int lsize;
   if (size == 0) {  /* no elements to hash part? */
+#if defined(LUA_NANBOX)
+    ensure_dummynode_init();
+#endif
     t->node = cast(Node *, dummynode);  /* use common `dummynode' */
     lsize = 0;
   }
@@ -422,7 +438,7 @@ static TValue *newkey (lua_State *L, Table *t, const TValue *key) {
       mp = n;
     }
   }
-  gkey(mp)->value = key->value; gkey(mp)->tt = key->tt;
+  setobj(L, key2tval(mp), key);
   luaC_barriert(L, t, key);
   lua_assert(ttisnil(gval(mp)));
   return gval(mp);

@@ -1,0 +1,8 @@
+.DS_Store
+build/
+src/*.o
+src/*.a
+src/*.exe
+src/*.dll
+bench_result.csv
+*.tmp

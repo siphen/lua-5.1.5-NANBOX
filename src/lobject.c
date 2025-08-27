@@ -24,7 +24,11 @@
 
 
 
+#if defined(LUA_NANBOX_LAYOUT)
+const TValue luaO_nilobject_ = { { (uint64_t)(NB_QNAN | ((NB_TAG_IMM & 0x3ULL) << NB_TAG_SHIFT) | 0ULL) } };
+#else
 const TValue luaO_nilobject_ = {{NULL}, LUA_TNIL};
+#endif
 
 
 /*
