@@ -3,6 +3,9 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * *'
 
 jobs:
   linux:
@@ -47,6 +50,26 @@ jobs:
           LUA_NANBOX_STRICT: ${{ matrix.strict }}
         run: |
           bash build.sh
+
+  linux-bench-report:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+      - name: Generate benchmark report
+        run: |
+          bash bench/bench_report.sh
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nanbox-benchmark-report
+          path: |
+            bench/report.md
+            docs/NANBOX_REPORT.md
 
   windows-msys-official-tests:
     runs-on: windows-latest
